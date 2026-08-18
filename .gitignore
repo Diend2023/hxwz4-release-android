@@ -1,33 +1,17 @@
-# Gradle files
 .gradle/
 build/
-
-# Local configuration file (sdk path, etc)
 local.properties
-
-# Log/OS Files
-*.log
-
-# Android Studio generated files and folders
-captures/
-.externalNativeBuild/
-.cxx/
-*.apk
-output.json
-
-# IntelliJ
-*.iml
 .idea/
-misc.xml
-deploymentTargetDropDown.xml
-render.experimental.xml
+*.iml
+.DS_Store
+/captures
+.externalNativeBuild
+.cxx
 
-# Keystore files
-*.jks
-*.keystore
+# 基线资源由 tools/sync_baseline.ps1 从 repo/ 生成，不入库
+/app/src/main/assets/www/
 
-# Google Services (e.g. APIs or Firebase)
-google-services.json
-
-# Android Profiling
-*.hprof
+# 目标仓库 clone 目录（含 .git，需保留以支持 pull；父仓库应完全忽略，
+# 否则会被当作 embedded repository 误提交）
+/repo/
+/hxwz4-release/
