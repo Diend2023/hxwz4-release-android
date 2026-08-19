@@ -27,7 +27,7 @@ import java.io.File
 
 /**
  * 幻想纹章4 安卓壳主界面。
- * 启动 → 更新界面（可跳过）→ 完成进入 WebView（WebViewAssetLoader 加载本地 files/web）。
+ * 启动 → 更新界面（初始化不可跳过；热更新可跳过）→ 完成进入 WebView（WebViewAssetLoader 加载本地 files/web）。
  */
 class MainActivity : AppCompatActivity() {
 
@@ -64,8 +64,8 @@ class MainActivity : AppCompatActivity() {
         btnRetry = findViewById(R.id.btnRetry)
         btnSkip = findViewById(R.id.btnSkip)
 
-        btnSkip.setOnClickListener { skipUpdate() }
         btnRetry.setOnClickListener { retryUpdate() }
+        btnSkip.setOnClickListener { skipUpdate() }
 
         updateManager = UpdateManager(this)
         startUpdate()
@@ -101,6 +101,8 @@ class MainActivity : AppCompatActivity() {
     private fun onUpdateState(state: UpdateState) {
         when (state.phase) {
             UpdateState.Phase.INIT -> {
+                // 初始化（首启基线复制）不可跳过
+                btnSkip.visibility = View.GONE
                 tvStatus.text = "初始化本地资源…"
                 progressBar.isIndeterminate = false
                 if (state.total > 0) {
@@ -109,19 +111,25 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             UpdateState.Phase.CHECKING -> {
+                // 热更新阶段可跳过
+                btnSkip.visibility = View.VISIBLE
                 tvStatus.text = "检查更新…"
                 progressBar.isIndeterminate = true
             }
             UpdateState.Phase.DOWNLOADING -> {
+                btnSkip.visibility = View.VISIBLE
                 tvStatus.text = "下载更新 ${state.current}/${state.total}"
                 progressBar.isIndeterminate = false
                 progressBar.max = state.total
                 progressBar.progress = state.current
             }
             UpdateState.Phase.DONE -> {
+                btnSkip.visibility = View.GONE
                 if (!enteringWeb) finishUpdateToWeb()
             }
             UpdateState.Phase.FAILED -> {
+                // 失败后可跳过进入游戏或重试
+                btnSkip.visibility = View.VISIBLE
                 tvStatus.text = "更新失败：${state.message}"
                 progressBar.isIndeterminate = false
                 btnRetry.visibility = View.VISIBLE
@@ -136,7 +144,7 @@ class MainActivity : AppCompatActivity() {
         tvStatus.text = "正在进入游戏…"
         progressBar.visibility = View.GONE
         btnRetry.visibility = View.GONE
-        btnSkip.isEnabled = false
+        btnSkip.visibility = View.GONE
 
         webContainer.visibility = View.VISIBLE
         updatePanel.visibility = View.GONE
