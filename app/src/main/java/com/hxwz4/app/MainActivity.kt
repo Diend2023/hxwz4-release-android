@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.os.Bundle
 import android.util.Log
 import android.view.View
+import android.webkit.MimeTypeMap
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -12,6 +13,8 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import java.io.File
+import java.io.FileInputStream
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -23,11 +26,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import java.io.File
 
 /**
  * 幻想纹章4 安卓壳主界面。
- * 启动 → 更新界面（初始化不可跳过；热更新可跳过）→ 完成进入 WebView（WebViewAssetLoader 加载本地 files/web）。
+ * 启动 → 更新界面（初始化不可跳过；热更新可跳过）→ 完成进入 WebView（WebViewAssetLoader 加载本地资源）。
  */
 class MainActivity : AppCompatActivity() {
 
@@ -163,13 +165,16 @@ class MainActivity : AppCompatActivity() {
         @Suppress("DEPRECATION")
         webSettings.setAllowFileAccessFromFileURLs(true)
 
-        // 通过 WebViewAssetLoader 以 https 虚拟域加载内部存储，避免 file:// 跨域限制
+        // 通过 WebViewAssetLoader 以 https 虚拟域加载外部私有目录，避免 file:// 跨域限制。
+        // 注意：InternalStoragePathHandler 仅支持 filesDir 下的目录，外部私有目录需自定义 PathHandler
+        val webDir = UpdateManager.resolveWebDir(this)
         val assetLoader = try {
             WebViewAssetLoader.Builder()
-                .addPathHandler(
-                    "/web/",
-                    WebViewAssetLoader.InternalStoragePathHandler(this, File(filesDir, "web"))
-                )
+                .addPathHandler("/web/", object : WebViewAssetLoader.PathHandler {
+                    override fun handle(path: String): WebResourceResponse? {
+                        return readWebFile(webDir, path)
+                    }
+                })
                 .build()
         } catch (e: Exception) {
             Log.w(TAG, "WebViewAssetLoader 不可用", e)
@@ -203,7 +208,7 @@ class MainActivity : AppCompatActivity() {
                 // 虚拟域加载失败时降级到 file:// 直接加载本地文件
                 if (!webFallbackTried) {
                     webFallbackTried = true
-                    val fallback = "file://${File(filesDir, "web").absolutePath}/index.html"
+                    val fallback = "file://${File(UpdateManager.resolveWebDir(this@MainActivity), "index.html").absolutePath}"
                     Log.w(TAG, "降级加载: $fallback")
                     view.loadUrl(fallback)
                 }
@@ -211,6 +216,29 @@ class MainActivity : AppCompatActivity() {
         }
 
         webView.loadUrl(MAIN_URL)
+    }
+
+    /**
+     * 从游戏资源根目录读取文件并构造 WebResourceResponse。
+     * 路径做规范化校验，防止 ../ 穿越目录。
+     */
+    private fun readWebFile(webDir: File, path: String): WebResourceResponse? {
+        try {
+            val canonicalRoot = webDir.canonicalPath
+            val file = File(webDir, path).canonicalFile
+            if (!file.path.startsWith(canonicalRoot + File.separator)) {
+                Log.w(TAG, "非法路径: $path")
+                return null
+            }
+            if (!file.isFile) return null
+            val mime = MimeTypeMap.getSingleton()
+                .getMimeTypeFromExtension(file.extension.lowercase())
+                ?: "application/octet-stream"
+            return WebResourceResponse(mime, null, FileInputStream(file))
+        } catch (e: Exception) {
+            Log.w(TAG, "读取文件失败: $path", e)
+            return null
+        }
     }
 
     override fun onDestroy() {

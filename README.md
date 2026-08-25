@@ -4,7 +4,7 @@
 
 - 更新源：CNB 仓库 raw —— `https://cnb.cool/hxwz4/hxwz4-release/-/git/raw/main/`
 - 更新清单：`md5s.json`（文件级 MD5：`{相对路径: md5}`）
-- 机制：启动 → 更新界面（可跳过）→ WebView（WebViewAssetLoader 加载本地 `files/web`）
+- 机制：启动 → 更新界面（初始化不可跳过、热更新可跳过）→ WebView（WebViewAssetLoader 加载外部私有目录 `Android/data/com.hxwz4.app/files/web`）
 - 约束：`index.html` 完全豁免（不下载、不覆盖、不删除），始终使用 APK 内置基线；差异文件增量覆盖更新、本地多余文件不删除；失败重试后跳过、不阻塞启动。
 
 ## 目录结构
@@ -12,7 +12,7 @@
 ```
 hxwz4-release-android/
 ├── repo/                       # 目标资源仓库 clone 目录（需手动 clone，见下）
-│   └── hxwz4-release/          #   git clone https://cnb.cool/hxwz4/hxwz4-release.git
+│   └── hxwz4-release/          #   git clone --depth=1 https://cnb.cool/hxwz4/hxwz4-release.git
 ├── app/                        # Android 壳工程
 │   ├── build.gradle.kts
 │   └── src/main/
@@ -38,7 +38,7 @@ hxwz4-release-android/
 
 ```bat
 mkdir repo
-git clone https://cnb.cool/hxwz4/hxwz4-release.git repo/hxwz4-release
+git clone --depth=1 https://cnb.cool/hxwz4/hxwz4-release.git repo/hxwz4-release
 ```
 
 3. 生成 APK 基线资源（把仓库全部文件复制进 `app/src/main/assets/www/` 并生成 `md5s.json`）：
@@ -92,54 +92,42 @@ gradlew.bat assembleRelease        # 发布包（当前未混淆）
 
 产物：`app/build/outputs/apk/debug/app-debug.apk`
 
-## 三、发布新版本（更新游戏资源）
-
-在目标仓库目录内重新生成清单并推送：
-
-```bat
-cd repo\hxwz4-release
-powershell -ExecutionPolicy Bypass -File ..\..\tools\gen_md5s.ps1 -SourceDir . -Output md5s.json
-git add -A
-git commit -m "update assets"
-git push origin main
-```
-
-客户端下次启动会自动对比 `md5s.json` 差异并增量下载，无需重新发版。
-
-## 四、热更新行为说明
+## 三、热更新行为说明
 
 | 场景 | 行为 |
 | ---- | ---- |
-| 首次启动 | 将 APK 内置基线复制到 `files/web/`，随后检查更新（可跳过） |
-| 常规启动 | 拉取远程 `md5s.json` → 差异计算 → 增量下载（6 并发、失败重试 2 次） |
-| 远程新增文件 | 下载到 `files/web/`（新增） |
-| 双方 MD5 不同 | 下载新版本**覆盖** `files/web/` 中的旧文件（先写 `.tmp` 校验 MD5 后原子替换） |
+| 首次启动 | 将 APK 内置基线复制到外部私有目录（`Android/data/com.hxwz4.app/files/web/`），初始化不可跳过，随后检查更新 |
+| 常规启动 | 拉取远程 `md5s.json` → 差异计算 → 增量下载（6 并发、失败重试 2 次），热更新阶段可跳过 |
+| 远程新增文件 | 下载到资源目录（新增） |
+| 双方 MD5 不同 | 下载新版本**覆盖**旧文件（先写 `.tmp` 校验 MD5 后原子替换） |
 | 远程已移除、本地仍存在 | 一律保留，不做删除 |
 | `index.html` | 永远使用 APK 内置版本，不下载/不覆盖/不删除 |
 | 断网/清单拉取失败 | 更新界面提示"重试 / 跳过"，跳过则用本地版本直接进游戏 |
 | 更新源 | `BASE_URL` 定义于 `UpdateManager.kt`，如需切换镜像直接修改 |
+| 资源目录 | `UpdateManager.resolveWebDir()`：优先 `getExternalFilesDir(null)/web`（无需存储权限，卸载自动清除），外部存储不可用时回退内部 `filesDir/web` |
 
-## 五、关键实现点
+## 四、关键实现点
 
 - 横屏 + 沉浸式全屏：`MainActivity.enterFullscreen()`（`WindowInsetsControllerCompat`）。
-- WebView：`WebViewAssetLoader` 以 `https://appassets.androidplatform.net/web/index.html` 虚拟域加载内部存储，规避 `file://` 的 fetch/XHR 跨域限制；开启 JS、DOM Storage、媒体自动播放。
+- WebView：`WebViewAssetLoader` 以 `https://appassets.androidplatform.net/web/index.html` 虚拟域加载**外部私有目录**资源，规避 `file://` 的 fetch/XHR 跨域限制；开启 JS、DOM Storage、媒体自动播放。
+- 资源目录：外部私有目录 `getExternalFilesDir(null)/web`（`/sdcard/Android/data/com.hxwz4.app/files/web/`），无需存储权限、卸载自动清除；`InternalStoragePathHandler` 仅支持 `filesDir` 下目录，故 WebView 使用自定义 `PathHandler`（含路径穿越校验 + MIME 推断）。
 - 更新：OkHttp + 协程 + 信号量并发（6），文件先写 `.tmp`、MD5 校验通过后原子改名，避免半截文件。
 - 移动端适配：`sync_baseline.ps1` 对 APK 内置 `index.html` 注入最终适配方案（embed 减半 + allowHighDPI + 容器等比缩放居中），详见上文"index.html 移动端适配"。
 
-## 六、TODO：资源加载方案演进设想
+## 五、TODO：资源加载方案演进设想
 
-当前实现为「基线复制 + 差异覆盖」：APK 内置 2.2GB 基线 → 首启整体复制到 `files/web/` → 热更新覆盖差异文件 → WebView 全部从 `files/web/` 加载。以下两种设想为后续演进方向，仅做可行性/代价/风险分析，尚未实施。
+当前实现为「基线复制 + 差异覆盖」：APK 内置 2.2GB 基线 → 首启整体复制到外部私有目录（`Android/data/com.hxwz4.app/files/web/`）→ 热更新覆盖差异文件 → WebView 全部从该目录加载。以下两种设想为后续演进方向，仅做可行性/代价/风险分析，尚未实施。
 
 ### 方案 1：Overlay 优先加载（基线仍走 APK assets）
 
-**设想**：游戏仍从 APK 内置基线（`assets/www`）加载，热更新资源仅存 `files/web/`。WebView 加载文件时**优先查 `files/web/`，命中即用；未命中回退 `assets/www`**（overlay 链）。基线文件无需复制到 `files/web/`，热更新只下载增量。
+**设想**：游戏仍从 APK 内置基线（`assets/www`）加载，热更新资源仅存外部私有目录（资源目录）。WebView 加载文件时**优先查资源目录，命中即用；未命中回退 `assets/www`**（overlay 链）。基线文件无需复制到资源目录，热更新只下载增量。
 
 **可行性**：高。`WebViewAssetLoader` 支持自定义 `PathHandler`，可自行实现"先查内部存储、miss 后读 assets"的链式处理器；初始化逻辑从"全量复制"改为"仅复制清单/index.html + 对比下载增量"。
 
 **优点**：
 
 - 首启初始化极快（不再复制 2.2GB 基线）
-- `files/web/` 只存增量，磁盘占用大幅下降
+- 资源目录只存增量，磁盘占用大幅下降
 - 离线可用：基线在 APK 内天然兜底
 - APK 内基线作为"出厂版本"，热更新增量叠加，版本回退容易
 
@@ -154,9 +142,9 @@ git push origin main
 
 ### 方案 2：纯热更新（不存基线，全部依赖下载）
 
-**设想**：APK 不再内置资源基线（或仅保留入口 `index.html` 骨架），首次启动即全量热更新，所有游戏资源仅存于 `files/web/`。
+**设想**：APK 不再内置资源基线（或仅保留入口 `index.html` 骨架），首次启动即全量热更新，所有游戏资源仅存于外部私有目录（资源目录）。
 
-**可行性**：高。现有 `UpdateManager` 已实现清单对比 + 增量下载 + MD5 校验，把"首启复制基线"改为"首启下载全量"即可；`WebViewAssetLoader` 加载 `files/web` 无需改动。
+**可行性**：高。现有 `UpdateManager` 已实现清单对比 + 增量下载 + MD5 校验，把"首启复制基线"改为"首启下载全量"即可；`WebViewAssetLoader` 加载资源目录无需改动。
 
 **优点**：
 

@@ -33,8 +33,9 @@ data class UpdateState(
 
 /**
  * 热更新管理器：
- * 1. 首次启动：将 APK assets/www 基线复制到 files/web，并写入随包 md5s.json 作为本地期望状态；
- * 2. 常规启动：拉取远程 md5s.json，与本地对比做差异收敛（只增不改，不做删除）；
+ * 1. 首次启动：将 APK assets/www 基线复制到外部私有目录（getExternalFilesDir/web），
+ *    并写入随包 md5s.json 作为本地期望状态；
+ * 2. 常规启动：拉取远程 md5s.json，与本地对比做差异收敛（差异覆盖、不删除多余文件）；
  * 3. 下载校验 MD5，失败重试后跳过，不中断整体。
  *
  * 约束：index.html 完全豁免——不下载、不覆盖、不删除，始终使用 APK 内置基线。
@@ -58,9 +59,19 @@ class UpdateManager(private val context: Context) {
 
         /** 并发下载数。 */
         private const val CONCURRENCY = 6
+
+        /**
+         * 解析游戏资源根目录（外部存储私有目录 files/web 的镜像）。
+         * 优先使用外部私有目录（无需存储权限，卸载自动清除），
+         * 外部存储不可用时回退到内部 files/web。
+         */
+        fun resolveWebDir(context: Context): File {
+            val ext = context.getExternalFilesDir(null)
+            return if (ext != null) File(ext, "web") else File(context.filesDir, "web")
+        }
     }
 
-    private val webDir: File = File(context.filesDir, "web")
+    private val webDir: File = resolveWebDir(context)
 
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
