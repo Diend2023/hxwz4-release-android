@@ -47,41 +47,27 @@ git clone --depth=1 https://cnb.cool/hxwz4/hxwz4-release.git repo/hxwz4-release
 powershell -ExecutionPolicy Bypass -File tools\sync_baseline.ps1
 ```
 
-> 说明：`sync_baseline.ps1` 复制仓库资源时，**仅对 APK 内置的 `index.html`** 做移动端适配（通过 `-CanvasW/-CanvasH` 可自定义目标尺寸，默认 `960x576`，传 `0` 跳过），**repo 目录本身不做任何修改**。`index.html` 不参与热更新（客户端白名单豁免），故 APK 内置版本即最终生效版本。
+> 说明：`sync_baseline.ps1` 复制仓库资源时，**仅对 APK 内置的 `index.html`** 做移动端适配（将 `lime.embed` 宽高改为 `0,0` 自适应容器，并移除 dpr viewport 残留脚本），**repo 目录本身不做任何修改**。`index.html` 不参与热更新（客户端白名单豁免），故 APK 内置版本即最终生效版本。
 
-### index.html 移动端适配（最终方案，已在真机验证）
+### index.html 移动端适配（最终方案）
 
 ```html
 <style>
-    html,body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #000; }
-    #content  { background: #000000; width: 960px; height: 576px; transform-origin: 0 0; }
+    html,body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+    #content  { background: #000000; width: 100%; height: 100%; }
 </style>
 <script>
-    lime.embed ("HxwzHaxe", "content", 960, 576, { allowHighDPI: true });
-    // 容器等比缩放居中（兼容任意屏幕）
-    (function() {
-        var GW = 960, GH = 576;
-        var ct = document.getElementById('content');
-        function scale() {
-            var ww = window.innerWidth, wh = window.innerHeight;
-            var s = Math.min(ww / GW, wh / GH);
-            ct.style.transform = 'scale(' + s + ')';
-            ct.style.marginLeft = ((ww - GW * s) / 2) + 'px';
-            ct.style.marginTop  = ((wh - GH * s) / 2) + 'px';
-        }
-        scale();
-        window.addEventListener('resize', scale);
-    })();
+    lime.embed ("HxwzHaxe", "content", 0, 0);
 </script>
 ```
 
 要点：
 
-- **`lime.embed` 尺寸减半**为 `960x576`（原 1920x1152）——游戏舞台随 embed 尺寸变化，必须同步减半才与引擎视口匹配
-- **`allowHighDPI: true`**——开启 dpr 超采样保持画面细腻（关闭会导致 canvas 缓冲=逻辑尺寸、画面模糊；但两者都不会引起"只显示左上角"）
-- **`#content` 固定 `960x576` + `transform-origin: 0 0`**——`scale()` 必须配合 `transform-origin:0 0`，否则画面会错位到右下角
-- **容器等比缩放 JS**：`Math.min(ww/GW, wh/GH)` 等比缩放 + margin 居中，任意屏幕比例都能完整显示、不变形
-- 移除 repo 原版的 `devicePixelRatio > 2` viewport 修改脚本
+- **`lime.embed` 宽高传 `0, 0`**：lime 在宽高均为 0 时自动取 `#content` 的 `clientWidth/clientHeight` 作为舞台尺寸，canvas 自适应容器（即窗口）大小，无需固定尺寸、无需缩放 JS
+- **`#content` 保持 repo 原版 `100%` 自适应**，铺满 WebView
+- **`allowHighDPI` 保持默认（true）**，开启 dpr 超采样保证画面细腻
+- 游戏内部舞台尺寸随 canvas 自适应，由 zygame 引擎自行做适配（`适配1080x1920, ...` 日志）
+- 移除 repo 原版 `devicePixelRatio > 2` 的 viewport `setAttribute` 残留（新方案中该脚本为无效空壳，已清理）
 
 ## 二、构建 APK
 
