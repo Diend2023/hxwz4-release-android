@@ -52,8 +52,9 @@ if (Test-Path $indexPath) {
     $newContent = [System.IO.File]::ReadAllText($indexPath, [System.Text.Encoding]::UTF8)
 
     # 1) lime.embed 宽高改为 0,0（匹配带空格的原始写法）
+    #    组1 = 1920 后的 ", "；组2 = 1152 后的 ");"（含右括号与分号）
     $embedPattern = 'lime\.embed\s*\(\s*"HxwzHaxe"\s*,\s*"content"\s*,\s*1920(\s*,\s*)1152(\s*\)\s*;)'
-    $embedReplacement = 'lime.embed ("HxwzHaxe", "content", 0, 0${2})'
+    $embedReplacement = 'lime.embed ("HxwzHaxe", "content", 0, 0${2}'
     $newContent = [regex]::Replace($newContent, $embedPattern, $embedReplacement)
 
     # 2) 移除 dpr>2 的 viewport setAttribute 行（新方案中该脚本为无效空壳）
@@ -63,8 +64,23 @@ if (Test-Path $indexPath) {
     Write-Host "已适配 APK 内置 index.html: embed 0,0 自适应容器（repo 未改动）"
 }
 
-# 生成随包 md5s.json（index.html 默认排除）
-& (Join-Path $PSScriptRoot "gen_md5s.ps1") -SourceDir $DestAssets -Output (Join-Path $DestAssets "md5s.json")
+# md5s.json 直接沿用 repo（cnb）版本，不重新生成：
+# 基线文件即从 repo 逐字节复制（仅 index.html 被适配且客户端白名单豁免），
+# repo 清单天然描述 APK 内置文件状态；首启时本地清单与远程一致 → 0 差异直接进游戏。
+# 仅当 repo 中不存在 md5s.json 时才兜底重新生成。
+$md5InAssets = Join-Path $DestAssets "md5s.json"
+if (-not (Test-Path $md5InAssets)) {
+    $md5InRepo = Join-Path $RepoDir "md5s.json"
+    if (Test-Path $md5InRepo) {
+        Copy-Item -LiteralPath $md5InRepo -Destination $md5InAssets -Force
+        Write-Host "md5s.json 已从 repo 复制（未重新生成）"
+    } else {
+        & (Join-Path $PSScriptRoot "gen_md5s.ps1") -SourceDir $DestAssets -Output $md5InAssets
+        Write-Host "repo 无 md5s.json，已兜底重新生成"
+    }
+} else {
+    Write-Host "md5s.json 沿用 repo 版本（未重新生成）"
+}
 
 $count = (Get-ChildItem -LiteralPath $DestAssets -Recurse -File -Force | Measure-Object).Count
 $sizeMB = [Math]::Round(((Get-ChildItem -LiteralPath $DestAssets -Recurse -File -Force | Measure-Object Length -Sum).Sum / 1MB), 1)

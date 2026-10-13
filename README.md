@@ -5,7 +5,7 @@
 - 更新源：CNB 仓库 raw —— `https://cnb.cool/hxwz4/hxwz4-release/-/git/raw/main/`
 - 更新清单：`md5s.json`（文件级 MD5：`{相对路径: md5}`）
 - 机制：启动 → 更新界面（初始化不可跳过、热更新可跳过）→ WebView（WebViewAssetLoader 加载外部私有目录 `Android/data/com.hxwz4.app/files/web`）
-- 约束：`index.html` 完全豁免（不下载、不覆盖、不删除），始终使用 APK 内置基线；差异文件增量覆盖更新、本地多余文件不删除；失败重试后跳过、不阻塞启动。
+- 约束：`index.html` 与 `md5s.json` 白名单豁免（不下载、不覆盖、不删除）；差异文件增量覆盖更新、本地多余文件不删除；失败重试后跳过、不阻塞启动。
 
 ## 目录结构
 
@@ -24,7 +24,7 @@ hxwz4-release-android/
 │       │   └── FileHasher.kt        # MD5 工具
 │       └── res/
 ├── tools/
-│   ├── sync_baseline.ps1       # 仓库资源 → app/assets/www + 生成随包 md5s.json
+│   ├── sync_baseline.ps1       # 仓库资源 → app/assets/www（md5s.json 沿用 repo 版本，不重新生成）
 │   └── gen_md5s.ps1            # 通用 md5s.json 生成脚本（发布时对仓库执行）
 ├── gradle/                     # Gradle wrapper
 ├── settings.gradle.kts
@@ -41,13 +41,15 @@ mkdir repo
 git clone --depth=1 https://cnb.cool/hxwz4/hxwz4-release.git repo/hxwz4-release
 ```
 
-3. 生成 APK 基线资源（把仓库全部文件复制进 `app/src/main/assets/www/` 并生成 `md5s.json`）：
+3. 生成 APK 基线资源（把仓库全部文件复制进 `app/src/main/assets/www/`，`md5s.json` 沿用 repo 版本）：
 
 ```bat
 powershell -ExecutionPolicy Bypass -File tools\sync_baseline.ps1
 ```
 
 > 说明：`sync_baseline.ps1` 复制仓库资源时，**仅对 APK 内置的 `index.html`** 做移动端适配（将 `lime.embed` 宽高改为 `0,0` 自适应容器，并移除 dpr viewport 残留脚本），**repo 目录本身不做任何修改**。`index.html` 不参与热更新（客户端白名单豁免），故 APK 内置版本即最终生效版本。
+>
+> `md5s.json` **不重新生成，直接沿用 repo（cnb）版本**：基线文件本就从 repo 逐字节复制（仅 `index.html` 被适配且白名单豁免），repo 清单天然描述 APK 内置状态；首启时本地清单与远程一致 → 0 差异直接进游戏，同时零 MD5 计算成本。仅当 repo 中不存在 `md5s.json` 时才兜底生成。
 
 ### index.html 移动端适配（最终方案）
 
@@ -83,11 +85,16 @@ gradlew.bat assembleRelease        # 发布包（当前未混淆）
 | 场景 | 行为 |
 | ---- | ---- |
 | 首次启动 | 将 APK 内置基线复制到外部私有目录（`Android/data/com.hxwz4.app/files/web/`），初始化不可跳过，随后检查更新 |
+| 初始化中断（杀进程/断电） | `index.html` **最后复制**（完整性哨兵）：中断时未落盘 → 重启重新完整复制（覆盖幂等）；旧版本升级用户已存在 → 直接跳过 |
 | 常规启动 | 拉取远程 `md5s.json` → 差异计算 → 增量下载（6 并发、失败重试 2 次），热更新阶段可跳过 |
 | 远程新增文件 | 下载到资源目录（新增） |
 | 双方 MD5 不同 | 下载新版本**覆盖**旧文件（先写 `.tmp` 校验 MD5 后原子替换） |
+| MD5 三级校验 | ① 实际=声明值 → 安装；② 不符但本地已有相同内容（远程清单过期）→ 按声明值收敛清单，不重复下载；③ 其余 → 拒绝重试 |
 | 远程已移除、本地仍存在 | 一律保留，不做删除 |
-| `index.html` | 永远使用 APK 内置版本，不下载/不覆盖/不删除 |
+| `index.html` / `md5s.json` | 白名单豁免：不下载、不覆盖、不写入本地清单 |
+| 下载失败/跳过/中断 | 成功文件保留 + 清单收敛；失败文件保留本地原条目，**下次启动继续尝试**（断点续传） |
+| 中断残留 | 下次启动 `cleanTmpFiles()` 清理 `.tmp*` 临时文件 |
+| 清单写入 | `writeLocalMd5s` **原子写**（tmp+rename）：以 cnb 清单为准，过滤白名单，失败文件保留本地条目；半截清单不会出现（否则会触发全量下载） |
 | 断网/清单拉取失败 | 更新界面提示"重试 / 跳过"，跳过则用本地版本直接进游戏 |
 | 更新源 | `BASE_URL` 定义于 `UpdateManager.kt`，如需切换镜像直接修改 |
 | 资源目录 | `UpdateManager.resolveWebDir()`：优先 `getExternalFilesDir(null)/web`（无需存储权限，卸载自动清除），外部存储不可用时回退内部 `filesDir/web` |
@@ -95,10 +102,12 @@ gradlew.bat assembleRelease        # 发布包（当前未混淆）
 ## 四、关键实现点
 
 - 横屏 + 沉浸式全屏：`MainActivity.enterFullscreen()`（`WindowInsetsControllerCompat`）。
-- WebView：`WebViewAssetLoader` 以 `https://appassets.androidplatform.net/web/index.html` 虚拟域加载**外部私有目录**资源，规避 `file://` 的 fetch/XHR 跨域限制；开启 JS、DOM Storage、媒体自动播放。
+- WebView：`WebViewAssetLoader` 以 `https://appassets.androidplatform.net/web/index.html` 虚拟域加载**外部私有目录**资源，规避 `file://` 的 fetch/XHR 跨域限制；开启 JS、DOM Storage、媒体自动播放；虚拟域加载失败自动降级 `file://`。
 - 资源目录：外部私有目录 `getExternalFilesDir(null)/web`（`/sdcard/Android/data/com.hxwz4.app/files/web/`），无需存储权限、卸载自动清除；`InternalStoragePathHandler` 仅支持 `filesDir` 下目录，故 WebView 使用自定义 `PathHandler`（含路径穿越校验 + MIME 推断）。
-- 更新：OkHttp + 协程 + 信号量并发（6），文件先写 `.tmp`、MD5 校验通过后原子改名，避免半截文件。
-- 移动端适配：`sync_baseline.ps1` 对 APK 内置 `index.html` 注入最终适配方案（embed 减半 + allowHighDPI + 容器等比缩放居中），详见上文"index.html 移动端适配"。
+- 更新：OkHttp + 协程 + 信号量并发（6），文件先写 `.tmp`、MD5 三级校验通过后原子改名，避免半截文件。
+- 清单策略：**本地期望清单以 cnb 清单为准**（`writeLocalMd5s`），白名单条目过滤、失败文件保留本地条目；`md5s.json` 与 `index.html` 均不参与下载；同步基线时 `md5s.json` 直接沿用 repo 版本（不重新生成）。
+- 中断恢复：启动清理 `.tmp*` 残留；初始化以 `index.html` 最后复制为完整性哨兵；下载中断后按清单差异断点续传。
+- 移动端适配：`sync_baseline.ps1` 对 APK 内置 `index.html` 注入最终适配方案（`lime.embed` 宽高 `0,0` 自适应容器），详见上文"index.html 移动端适配"。
 
 ## 五、TODO：资源加载方案演进设想
 
