@@ -360,6 +360,9 @@ class UpdateManager(private val context: Context) {
     }
 
     private fun downloadFile(path: String, target: File) {
+        // 远程可能新增目录（本地尚无该目录）：必须先创建父目录，
+        // 否则 FileOutputStream 会抛 FileNotFoundException，导致新目录文件永远下载不下来。
+        target.parentFile?.mkdirs()
         val url = BASE_URL + encodePath(path)
         val request = Request.Builder().url(url).build()
         httpClient.newCall(request).execute().use { resp ->
